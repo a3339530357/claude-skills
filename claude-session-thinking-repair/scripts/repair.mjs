@@ -15,15 +15,20 @@ const take = (name) => {
 const file = args[0]?.startsWith('--') ? undefined : args[0];
 const apply = args.includes('--apply');
 const allThinking = args.includes('--all-thinking');
+const recoverBroken = args.includes('--recover-broken-lines');
 const backupDir = take('--backup-dir');
 const restore = take('--restore');
 const yes = args.includes('--yes');
-const known = new Set(['--apply', '--all-thinking', '--backup-dir', '--restore', '--yes', '--json']);
+const known = new Set(['--apply', '--all-thinking', '--recover-broken-lines', '--backup-dir', '--restore', '--yes', '--json']);
 for (const a of args) if (a.startsWith('--') && !known.has(a)) fail(`未知参数: ${a}`);
-if (!file) fail('用法: repair.mjs <session.jsonl> [--apply --backup-dir <目录>] [--restore <备份文件> --yes] [--all-thinking] [--json]');
-if (restore && (apply || backupDir || allThinking)) fail('--restore 不能与 --apply/--backup-dir/--all-thinking 同时使用');
+if (!file) fail('用法: repair.mjs <session.jsonl> [--apply --backup-dir <目录>] [--restore <备份文件> --yes] [--all-thinking] [--recover-broken-lines] [--json]');
+if (restore && (apply || backupDir || allThinking || recoverBroken)) fail('--restore 不能与 --apply/--backup-dir/--all-thinking/--recover-broken-lines 同时使用');
 if (apply && !backupDir) fail('--apply 必须同时指定 --backup-dir');
 if (apply && restore) fail('不能同时修复和回滚');
+
+// 官方签名是上千字符的 base64 密文；第三方网关常塞 24/36 字符的 UUID 片段冒充，按无签名处理。
+const MIN_SIGNATURE_LENGTH = 200;
+const SIGNATURE_PATTERN = /^[A-Za-z0-9+/=_-]+$/;
 
 function fail(message) {
   console.error(`错误: ${message}`);
@@ -35,13 +40,20 @@ function hash(buffer) {
 function isThinking(block) {
   return block?.type === 'thinking' || block?.type === 'redacted_thinking';
 }
-function isTrusted(block) {
-  return !allThinking && typeof block?.signature === 'string' && block.signature.trim().length > 0;
+function untrustedReason(block) {
+  if (allThinking) return 'allThinking';
+  if (block?.type === 'thinking' && !(typeof block.thinking === 'string' && block.thinking.trim())) return 'whitespace';
+  const sig = typeof block?.signature === 'string' ? block.signature.trim() : '';
+  if (!sig) return 'missingSignature';
+  if (sig.length < MIN_SIGNATURE_LENGTH || !SIGNATURE_PATTERN.test(sig)) return 'shortSignature';
+  return null;
 }
 function needsRemoval(block) {
-  return isThinking(block) && !isTrusted(block);
+  return isThinking(block) && untrustedReason(block) !== null;
 }
 function contentBlocks(record) {
+  // api-request* 是内容寻址的调试快照，改了会与 hash 不符，也不参与会话历史。
+  if (typeof record?.type === 'string' && record.type.startsWith('api-request')) return [];
   return Array.isArray(record?.message?.content) ? record.message.content : [];
 }
 function isPayload(block) {
@@ -68,73 +80,112 @@ function compareCounts(before, after) {
   }
   return out;
 }
+// 写盘被打断后重写，会留下「半截旧记录 + 完整新记录」拼在同一行；取能解析且带 uuid 的后缀。
+function recoverLine(line) {
+  let i = line.indexOf('{"', 1);
+  while (i > 0) {
+    try {
+      const record = JSON.parse(line.slice(i));
+      if (record && typeof record === 'object' && record.uuid) {
+        const prefixParent = line.slice(0, i).match(/"parentUuid":"([^"]+)"/)?.[1];
+        return { record, prefixParent, offset: i };
+      }
+    } catch {}
+    i = line.indexOf('{"', i + 1);
+  }
+  return null;
+}
+async function eachLine(fileName, fn) {
+  const rl = readline.createInterface({ input: fs.createReadStream(fileName, { encoding: 'utf8' }), crlfDelay: Infinity });
+  let n = 0;
+  for await (const line of rl) fn(line, ++n);
+}
+async function prepass(fileName) {
+  const uuids = new Set();
+  const broken = [];
+  await eachLine(fileName, (line, n) => {
+    if (!line.trim()) return;
+    try {
+      const r = JSON.parse(line);
+      if (r.uuid) uuids.add(r.uuid);
+    } catch (e) {
+      const rec = recoverLine(line);
+      broken.push(rec
+        ? { line: n, error: e.message, recoverable: true, uuid: rec.record.uuid, droppedPrefixChars: rec.offset }
+        : { line: n, error: e.message, recoverable: false });
+      if (rec) uuids.add(rec.record.uuid);
+    }
+  });
+  return { uuids, broken };
+}
+function parseLine(line, ctx) {
+  try { return JSON.parse(line); } catch {}
+  const rec = recoverLine(line);
+  if (!rec) return null;
+  const r = rec.record;
+  // 后缀自带的父节点不存在时，用前缀里那半截记录的父节点接回链上。
+  if (r.parentUuid && !ctx.uuids.has(r.parentUuid) && rec.prefixParent && ctx.uuids.has(rec.prefixParent)) r.parentUuid = rec.prefixParent;
+  return r;
+}
 async function scan(fileName) {
-  const input = fs.createReadStream(fileName, { encoding: 'utf8' });
-  const rl = readline.createInterface({ input, crlfDelay: Infinity });
+  const ctx = await prepass(fileName);
   const result = {
-    lines: 0, invalidJson: [], records: 0, thinkingRecords: 0,
+    lines: 0, invalidJson: ctx.broken.filter((b) => !b.recoverable), brokenLines: ctx.broken.filter((b) => b.recoverable),
+    records: 0, thinkingRecords: 0,
     removeBlocks: 0, removeRecords: 0, stripOnlyRecords: 0,
-    trustedBlocks: 0, retainedRecords: 0, reparentedRecords: 0,
+    trustedBlocks: 0, untrustedReasons: {}, thinkingByModel: {}, reparentedRecords: 0,
     duplicateUuids: [], missingParents: [], emptyContent: [],
     preservedSegments: [], signedTurnsWithUntrusted: [],
     counts: { text: 0, tool_use: 0, tool_result: 0, image: 0, server_tool_use: 0 },
     signedTurns: new Map(),
   };
   const uuidLines = new Map();
-  for await (const line of rl) {
-    result.lines++;
-    if (!line.trim()) continue;
-    let record;
-    try { record = JSON.parse(line); } catch (e) {
-      result.invalidJson.push({ line: result.lines, error: e.message });
-      continue;
-    }
+  const parents = new Map();
+  const removed = new Set();
+  await eachLine(fileName, (line, n) => {
+    result.lines = n;
+    if (!line.trim()) return;
+    const record = parseLine(line, ctx);
+    if (!record) return;
     result.records++;
     if (record.uuid) {
-      if (uuidLines.has(record.uuid)) result.duplicateUuids.push({ uuid: record.uuid, lines: [uuidLines.get(record.uuid), result.lines] });
-      else uuidLines.set(record.uuid, result.lines);
+      if (uuidLines.has(record.uuid)) result.duplicateUuids.push({ uuid: record.uuid, lines: [uuidLines.get(record.uuid), n] });
+      else uuidLines.set(record.uuid, n);
+      if (record.parentUuid) parents.set(record.uuid, record.parentUuid);
     }
     const blocks = contentBlocks(record);
     const thinking = blocks.filter(isThinking);
     const untrusted = blocks.filter(needsRemoval);
     if (thinking.length) result.thinkingRecords++;
-    result.trustedBlocks += thinking.filter((b) => !needsRemoval(b)).length;
+    result.trustedBlocks += thinking.length - untrusted.length;
+    const model = record.message?.model || '(无 model)';
+    for (const b of thinking) {
+      const reason = untrustedReason(b);
+      const m = result.thinkingByModel[model] ||= { trusted: 0, untrusted: 0 };
+      if (reason) { m.untrusted++; result.untrustedReasons[reason] = (result.untrustedReasons[reason] || 0) + 1; } else m.trusted++;
+    }
     for (const b of blocks) if (Object.hasOwn(result.counts, b?.type)) result.counts[b.type]++;
-    if (blocks.length && !blocks.some(isPayload)) result.emptyContent.push(result.lines);
+    if (blocks.length && !blocks.some(isPayload)) result.emptyContent.push(n);
     if (untrusted.length) {
       result.removeBlocks += untrusted.length;
-      if (blocks.every(isThinking)) result.removeRecords++;
-      else result.stripOnlyRecords++;
+      if (blocks.every(isThinking)) {
+        result.removeRecords++;
+        if (record.uuid) removed.add(record.uuid);
+      } else result.stripOnlyRecords++;
     }
     if (record.message?.id && thinking.length) {
       const item = result.signedTurns.get(record.message.id) || { trusted: 0, untrusted: 0 };
-      item.trusted += thinking.filter((b) => !needsRemoval(b)).length;
+      item.trusted += thinking.length - untrusted.length;
       item.untrusted += untrusted.length;
       result.signedTurns.set(record.message.id, item);
     }
     if (record.type === 'system' && record.subtype === 'compact_boundary') {
       const uuids = record.compactMetadata?.preservedMessages?.uuids;
-      if (Array.isArray(uuids)) result.preservedSegments.push({ line: result.lines, uuids });
+      if (Array.isArray(uuids)) result.preservedSegments.push({ line: n, uuids });
     }
-  }
+  });
   for (const [id, turn] of result.signedTurns) {
     if (turn.trusted && turn.untrusted) result.signedTurnsWithUntrusted.push(id);
-  }
-  // 第二次流式扫描只收集父引用，避免把整个会话载入内存。
-  const parents = new Map();
-  const rl2 = readline.createInterface({ input: fs.createReadStream(fileName, { encoding: 'utf8' }), crlfDelay: Infinity });
-  for await (const line of rl2) {
-    if (!line.trim()) continue;
-    let r; try { r = JSON.parse(line); } catch { continue; }
-    if (r.uuid && r.parentUuid) parents.set(r.uuid, r.parentUuid);
-  }
-  const removed = new Set();
-  const rl3 = readline.createInterface({ input: fs.createReadStream(fileName, { encoding: 'utf8' }), crlfDelay: Infinity });
-  for await (const line of rl3) {
-    if (!line.trim()) continue;
-    let r; try { r = JSON.parse(line); } catch { continue; }
-    const blocks = contentBlocks(r);
-    if (r.uuid && blocks.length && blocks.every(isThinking) && blocks.some(needsRemoval)) removed.add(r.uuid);
   }
   for (const [uuid, parent] of parents) {
     if (!uuidLines.has(parent)) result.missingParents.push({ uuid, parent });
@@ -150,11 +201,17 @@ async function scan(fileName) {
   const affectedSegments = result.preservedSegments.filter((s) => s.uuids.some((u) => removed.has(u)));
   const orphanParents = result.missingParents.filter((x) => removed.has(x.parent));
   const preexistingMissingParents = result.missingParents.filter((x) => !removed.has(x.parent));
-  return { ...result, signedTurns: undefined, affectedSegments, orphanParents, preexistingMissingParents, repairNeeded: result.removeBlocks > 0 };
+  return {
+    ...result, signedTurns: undefined, affectedSegments, orphanParents, preexistingMissingParents,
+    repairNeeded: result.removeBlocks > 0 || result.brokenLines.length > 0,
+  };
 }
 async function repair(fileName, backupDirectory) {
   const before = await scan(fileName);
-  if (before.invalidJson.length) fail('原文件有无效 JSON，拒绝自动修复');
+  if (before.invalidJson.length) fail(`有 ${before.invalidJson.length} 行无法解析也无法恢复，拒绝自动修复`);
+  if (before.brokenLines.length && !recoverBroken) {
+    fail(`有 ${before.brokenLines.length} 行是写盘中断造成的拼接坏行（见诊断 brokenLines）；确认后加 --recover-broken-lines 一并恢复`);
+  }
   if (before.orphanParents.length) fail('存在父节点将被删除但无法重接的记录，拒绝自动修复');
   if (!before.repairNeeded) {
     console.log('没有需要删除的思考块；未修改文件。');
@@ -169,22 +226,21 @@ async function repair(fileName, backupDirectory) {
   const metadata = {
     source: path.resolve(fileName), backup: backupFile,
     sha256: hash(original), bytes: original.length,
-    createdAt: new Date().toISOString(), allThinking,
+    createdAt: new Date().toISOString(), allThinking, recoverBroken,
   };
   fs.writeFileSync(path.join(targetBackup, 'manifest.json'), JSON.stringify(metadata, null, 2) + '\n', { flag: 'wx' });
 
-  const temp = path.join(targetBackup, 'repaired.jsonl');
-  const out = fs.createWriteStream(temp, { flags: 'wx' });
+  const ctx = await prepass(fileName);
   const removed = new Set();
   const parents = new Map();
-  const rl = readline.createInterface({ input: fs.createReadStream(fileName, { encoding: 'utf8' }), crlfDelay: Infinity });
-  for await (const line of rl) {
-    if (!line.trim()) continue;
-    const r = JSON.parse(line);
+  await eachLine(fileName, (line) => {
+    if (!line.trim()) return;
+    const r = parseLine(line, ctx);
+    if (!r) return;
     if (r.uuid && r.parentUuid) parents.set(r.uuid, r.parentUuid);
     const blocks = contentBlocks(r);
     if (r.uuid && blocks.length && blocks.every(isThinking) && blocks.some(needsRemoval)) removed.add(r.uuid);
-  }
+  });
   const nearestParent = (parent) => {
     const seen = new Set();
     let p = parent;
@@ -194,12 +250,13 @@ async function repair(fileName, backupDirectory) {
     }
     return p;
   };
-  const rl2 = readline.createInterface({ input: fs.createReadStream(fileName, { encoding: 'utf8' }), crlfDelay: Infinity });
+  const temp = path.join(targetBackup, 'repaired.jsonl');
+  const out = fs.createWriteStream(temp, { flags: 'wx' });
   let kept = 0;
-  for await (const line of rl2) {
-    if (!line.trim()) { out.write(line + '\n'); continue; }
-    const r = JSON.parse(line);
-    if (r.uuid && removed.has(r.uuid)) continue;
+  await eachLine(fileName, (line) => {
+    if (!line.trim()) { out.write(line + '\n'); return; }
+    const r = parseLine(line, ctx);
+    if (r.uuid && removed.has(r.uuid)) return;
     const blocks = contentBlocks(r);
     if (blocks.length) {
       const filtered = blocks.filter((b) => !needsRemoval(b));
@@ -207,29 +264,29 @@ async function repair(fileName, backupDirectory) {
       r.message.content = filtered;
     }
     if (r.parentUuid) r.parentUuid = nearestParent(r.parentUuid);
-    const cleaned = cleanObject(r, removed);
-    out.write(JSON.stringify(cleaned) + '\n');
+    out.write(JSON.stringify(cleanObject(r, removed)) + '\n');
     kept++;
-  }
+  });
   await new Promise((resolve, reject) => { out.end(resolve); out.on('error', reject); });
   const after = await scan(temp);
   compareCounts(before.counts, after.counts);
-  if (after.invalidJson.length || after.duplicateUuids.length || after.missingParents.length) {
+  if (after.invalidJson.length || after.brokenLines.length || after.duplicateUuids.length || after.missingParents.length) {
     fail('修复文件未通过 JSON/UUID/父链校验，原文件未修改');
   }
   if (after.repairNeeded) fail('修复后仍有需要删除的思考块，原文件未修改');
   const beforeSize = fs.statSync(fileName).size;
-  const beforeHash = hash(fs.readFileSync(fileName));
-  if (beforeHash !== metadata.sha256) fail('备份后原文件发生变化，拒绝覆盖；请重新诊断');
+  if (hash(fs.readFileSync(fileName)) !== metadata.sha256) {
+    fail('备份后原文件发生变化（会话仍在写入）；原文件未修改。先完全退出该 Claude Code 会话、修复完成前不要 resume，再从另一个 shell 重跑');
+  }
   fs.copyFileSync(temp, fileName);
   const finalHash = hash(fs.readFileSync(fileName));
   if (finalHash !== hash(fs.readFileSync(temp))) fail('写入后的文件校验失败；请使用备份回滚');
   fs.writeFileSync(path.join(targetBackup, 'result.json'), JSON.stringify({
-    before: { repairNeeded: before.repairNeeded, removeBlocks: before.removeBlocks, removeRecords: before.removeRecords },
+    before: { repairNeeded: before.repairNeeded, removeBlocks: before.removeBlocks, removeRecords: before.removeRecords, brokenLines: before.brokenLines.length },
     after: { repairNeeded: after.repairNeeded, lines: after.lines, sha256: finalHash },
     originalBytes: beforeSize,
   }, null, 2) + '\n');
-  console.log(JSON.stringify({ applied: true, backup: backupFile, manifest: path.join(targetBackup, 'manifest.json'), removedBlocks: before.removeBlocks, removedRecords: before.removeRecords, reparentedRecords: before.reparentedRecords, finalSha256: finalHash }, null, 2));
+  console.log(JSON.stringify({ applied: true, backup: backupFile, manifest: path.join(targetBackup, 'manifest.json'), removedBlocks: before.removeBlocks, removedRecords: before.removeRecords, reparentedRecords: before.reparentedRecords, recoveredBrokenLines: before.brokenLines.length, finalSha256: finalHash }, null, 2));
 }
 function restoreFile(fileName, backupFile) {
   if (!yes) fail('回滚会覆盖当前会话文件；确认路径后添加 --yes');
