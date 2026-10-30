@@ -1,0 +1,20 @@
+{
+  "name": "cc-zhuabao",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local MITM proxy to capture Claude Code HTTP(S) traffic (headers + bodies + streaming).",
+  "main": "src/index.js",
+  "bin": {
+    "cc-zhuabao": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "view": "node src/viewer.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "node-forge": "^1.3.1"
+  }
+}

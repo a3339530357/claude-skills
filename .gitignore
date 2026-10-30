@@ -1,0 +1,39 @@
+# ===== 凭据：绝对不能提交 =====
+# 抖音 / B 站登录 Cookie
+*/data/cookie.json
+*/data/*.json
+# CA 私钥与证书
+certs/
+*.key
+*.pem
+
+# ===== 模型与虚拟环境（3.7 GB）=====
+douyin-subtitle/sensevoice/
+.venv/
+.venv-*/
+**/site-packages/
+**/__pycache__/
+
+# ===== 依赖 =====
+node_modules/
+
+# ===== Claude Code 自己的缓存 =====
+synced/
+
+# ===== 抓包样本、临时日志 =====
+logs/
+v1-messages*.json
+*.raw.json
+
+# ===== 系统垃圾 =====
+.DS_Store
+Thumbs.db
+*.log
+
+# ===== 删除残留与断链 =====
+.trash/
+browser-cdp
+
+# ===== 第三方 story 技能（已卸载，断链）=====
+story
+story-*

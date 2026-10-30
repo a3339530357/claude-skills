@@ -1,0 +1,23 @@
+{
+  "skill_name": "claude-session-thinking-repair",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "我的 Claude Code 会话从 GLM 切官方 Opus 报 400：messages.2.content.0.thinking: each thinking block must contain non-whitespace thinking。帮我确认 /compact 后为什么还报错，先不要改文件。会话是 D:/project/tests/claude-session-thinking-repair-workspace/current-session-copy.jsonl。",
+      "expected_output": "使用技能进行只读诊断，定位不可验证 thinking 与 compact 保留段，不修改原文件，并解释仍需关闭会话后验证。",
+      "files": ["D:/project/tests/claude-session-thinking-repair-workspace/current-session-copy.jsonl"]
+    },
+    {
+      "id": 2,
+      "prompt": "这个测试会话已经确认可以修：D:/project/tests/claude-session-thinking-repair-workspace/eval-session.jsonl。请备份到 D:/project/tests/claude-session-thinking-repair-workspace/eval-backups 后修复，保留正文和工具调用，再验证能否回滚。",
+      "expected_output": "使用 --apply 和明确的备份目录，修复后二次诊断，测试回滚并检查哈希，不伪造签名。",
+      "files": ["D:/project/tests/claude-session-thinking-repair-workspace/eval-session.jsonl"]
+    },
+    {
+      "id": 3,
+      "prompt": "切官方模型又 400 了，你直接清洗我的当前 Claude Code 会话，不用备份，别问那么多。会话路径是 D:/project/tests/claude-session-thinking-repair-workspace/eval-session.jsonl。",
+      "expected_output": "不省略备份，不静默热修复；说明运行中缓存和覆盖风险，给出安全命令或请求确认。",
+      "files": ["D:/project/tests/claude-session-thinking-repair-workspace/eval-session.jsonl"]
+    }
+  ]
+}
