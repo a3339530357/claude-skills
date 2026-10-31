@@ -2,12 +2,13 @@
 // 走移动端 Feed 接口（media-parser 的主路径）：免签名、免 Cookie。
 //
 // 用法: node video_meta.mjs <视频URL/短链/分享文本/ID> [--download]
-//   --download  把无水印视频存成 video_<ID>.mp4（本地转写兜底用）
+//   --download  把无水印视频存成 <OUT_ROOT>/<标题>_<ID>/video_<ID>.mp4（本地转写兜底用）
 // 作为模块: import { fetchMeta, fetchNativeCaptions, density } from './video_meta.mjs'
 
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { resolveAwemeId } from './resolve_id.mjs';
+import { paths, ensureDir } from './outdir.mjs';
 
 const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
 const HOSTS = ['https://api5-normal-c-hl.amemv.com', 'https://aweme.snssdk.com'];
@@ -73,11 +74,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (!meta) { console.error('Feed 没匹配到这条作品（删除/私密/图文，或接口变了）'); process.exit(1); }
   console.log(JSON.stringify({ ...meta, play_urls: meta.play_urls.length + ' 个' }, null, 2));
   if (dl) {
+    const P = paths(aid, meta);
+    ensureDir(P.dir);
     for (const u of meta.play_urls) {
       const r = await fetch(u, { headers: { 'user-agent': UA } }).catch(() => null);
       if (!r?.ok) continue;
-      fs.writeFileSync(`video_${aid}.mp4`, Buffer.from(await r.arrayBuffer()));
-      console.log(`已下载 video_${aid}.mp4（${(fs.statSync(`video_${aid}.mp4`).size / 1048576).toFixed(1)} MB）`);
+      fs.writeFileSync(P.video, Buffer.from(await r.arrayBuffer()));
+      console.log(`已下载 video_${aid}.mp4（${(fs.statSync(P.video).size / 1048576).toFixed(1)} MB）→ ${P.dir}`);
       break;
     }
   }

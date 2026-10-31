@@ -4,14 +4,19 @@
 // 用法:
 //   node api_extract.mjs <视频URL/短链/分享文本/ID>              # 新会话：视频总结 → 提取 → 清理
 //   node api_extract.mjs <ID> --followup "<追问>"                 # 接着上次的会话追问（如输出截断）
-// 输出(当前目录): summary_<ID>.txt  subtitles_<ID>.txt  session_<ID>.json（会话 ID，供 --followup 用）
+// 输出布局（见 outdir.mjs）:
+//   <OUT_ROOT>/<标题>_<ID>.md          完整字幕（markdown，正式交付物）
+//   <OUT_ROOT>/<标题>_<ID>/            其余散件：summary/subtitles/session/meta/followup/video
+//   根目录默认 D:\project\tests\douyin-subs，DOUYIN_OUT_DIR 可覆盖
 // Cookie: 由 cookie.mjs 管理（DOUYIN_COOKIE > <skill目录>/data/cookie.json > 缺失/过期时借 CDP 从 Chrome 读一次并写回）；不打印
 
 import fs from 'node:fs';
+import path from 'node:path';
 import { resolveAwemeId } from './resolve_id.mjs';
 import { cleanAnswer, stripLeadingDescription } from './clean.mjs';
 import { fetchMeta, fetchNativeCaptions, density } from './video_meta.mjs';
 import { getDouyinCookie, LOGIN_HINT } from './cookie.mjs';
+import { paths, ensureDir, findDir, writeMarkdown } from './outdir.mjs';
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
 
@@ -56,44 +61,58 @@ if (!AID) { console.error('用法: node api_extract.mjs <视频URL/短链/分享
 
 try {
   const cookie = await getDouyinCookie();
-  const sessFile = `session_${AID}.json`;
   const t0 = Date.now();
   const sec = () => ((Date.now() - t0) / 1000).toFixed(1) + 's';
 
   if (followup) {
+    // 追问：目录名带标题，此时还不知道，先在 OUT_ROOT 里按 ID 找回
+    const dir = findDir(AID);
+    if (!dir) throw new Error(`OUT_ROOT 下找不到 *${AID} 的目录，先跑一次不带 --followup 的提取`);
+    const sessFile = path.join(dir, `session_${AID}.json`);
     if (!fs.existsSync(sessFile)) throw new Error(`没有 ${sessFile}，先跑一次不带 --followup 的提取`);
     const r = await ask(cookie, AID, followup, JSON.parse(fs.readFileSync(sessFile, 'utf8')));
     fs.writeFileSync(sessFile, JSON.stringify(r.sess));
+    // 追问可能不止一次，按已有 followup 文件数递增，别互相覆盖
+    let n = 1;
+    while (fs.existsSync(path.join(dir, n > 1 ? `followup_${AID}_${n}.txt` : `followup_${AID}.txt`))) n++;
+    const fname = n > 1 ? `followup_${AID}_${n}.txt` : `followup_${AID}.txt`;
     const out = cleanAnswer(r.text, console.log);
-    fs.writeFileSync(`followup_${AID}.txt`, out, 'utf-8');
-    console.log(`追问完成 ${sec()} → followup_${AID}.txt\n${out}`);
+    fs.writeFileSync(path.join(dir, fname), out, 'utf-8');
+    console.log(`追问完成 ${sec()} → ${dir}\\${fname}\n${out}`);
   } else {
     // 0) 元数据（免签名免 Cookie）：时长用于完整度判断；有原生字幕就直接用真字幕，不必问 AI
     const meta = await fetchMeta(AID).catch(() => null);
+    const P = paths(AID, meta);
+    ensureDir(P.dir);
     if (meta) {
-      fs.writeFileSync(`meta_${AID}.json`, JSON.stringify(meta, null, 2), 'utf-8');
+      fs.writeFileSync(P.meta, JSON.stringify(meta, null, 2), 'utf-8');
       console.log(`aweme_id=${AID}  ${meta.author}「${meta.title.slice(0, 30)}」 ${meta.duration_s}s  原生字幕 ${meta.captions.length} 条`);
       const native = meta.captions.length ? await fetchNativeCaptions(meta).catch(() => null) : null;
       if (native) {
-        fs.writeFileSync(`subtitles_${AID}.txt`, native, 'utf-8');
+        fs.writeFileSync(P.subs, native, 'utf-8');
         const d = density(native, meta.duration_s);
-        console.log(`有平台原生字幕，已直接下载 → subtitles_${AID}.txt（${d.chars} 字，${d.perMin} 字/分钟）。这是真字幕，不需要 AI 提取`);
+        const md = writeMarkdown(AID, meta, { perMin: d.perMin, source: '平台原生字幕（WebVTT）' });
+        console.log(`有平台原生字幕，已直接下载（${d.chars} 字，${d.perMin} 字/分钟）。这是真字幕，不需要 AI 提取`);
+        console.log(`  正文 → ${P.subs}\n  markdown → ${md}`);
         process.exit(0);
       }
     } else console.log(`aweme_id=${AID}  （元数据没取到，跳过完整度判断）`);
 
-    console.log('新会话');
+    console.log(`新会话  → ${P.dir}`);
     const s1 = await ask(cookie, AID, '视频总结');
-    fs.writeFileSync(`summary_${AID}.txt`, cleanAnswer(s1.text), 'utf-8');
+    fs.writeFileSync(P.summary, cleanAnswer(s1.text), 'utf-8');
     console.log(`[1/2] 视频总结 ${sec()}  conv=${s1.sess.conversation_id}`);
     const prompt = fs.readFileSync(new URL('./extract_prompt.txt', import.meta.url), 'utf8').trim();
     const s2 = await ask(cookie, AID, prompt, s1.sess);
-    fs.writeFileSync(sessFile, JSON.stringify(s2.sess));
+    fs.writeFileSync(P.session, JSON.stringify(s2.sess));
     let subs = cleanAnswer(s2.text, console.log);
     if (meta) subs = stripLeadingDescription(subs, meta.title, console.log);
-    fs.writeFileSync(`subtitles_${AID}.txt`, subs, 'utf-8');
-    console.log(`[2/2] 提取 ${sec()}  ${subs.length} 字 → subtitles_${AID}.txt（验收依据 summary_${AID}.txt）`);
-    if (meta) { const d = density(subs, meta.duration_s); console.log(`完整度: ${d.chars} 字 / ${meta.duration_s}s = ${d.perMin} 字/分钟 → ${d.verdict}`); }
+    fs.writeFileSync(P.subs, subs, 'utf-8');
+    const d = meta ? density(subs, meta.duration_s) : null;
+    const md = writeMarkdown(AID, meta, { perMin: d?.perMin, source: '抖音「问问AI」语音识别' });
+    console.log(`[2/2] 提取 ${sec()}  ${subs.length} 字`);
+    if (d) console.log(`完整度: ${d.chars} 字 / ${meta.duration_s}s = ${d.perMin} 字/分钟 → ${d.verdict}`);
+    console.log(`  markdown → ${md}\n  散件 → ${P.dir}\\（summary/subtitles/session/meta）`);
     console.log('---- 前 300 字 ----\n' + subs.slice(0, 300) + '\n---- 末 150 字 ----\n' + subs.slice(-150));
   }
 } catch (e) {

@@ -12,9 +12,24 @@ description: 提取抖音视频的完整字幕/口播文本（附带 AI 总结�
 ## 执行（主路径）
 
 ```bash
-cd <工作目录>                                    # 输出文件落在当前目录
 node <skill目录>/scripts/api_extract.mjs "<链接/短链/整段分享口令/ID>"
 ```
+
+**输出落在固定根目录，与当前工作目录无关**（默认 `D:\project\tests\douyin-subs`，`DOUYIN_OUT_DIR` 可覆盖）：
+
+```
+<OUT_ROOT>/
+  <标题>_<ID>.md          ← 完整字幕，markdown，正式交付物（二级）
+  <标题>_<ID>/            ← 所有散件（三级）
+      summary_<ID>.txt        视频总结，验收依据
+      subtitles_<ID>.txt      字幕正文（纯文本，.md 的源）
+      meta_<ID>.json          标题/作者/时长/原生字幕地址/播放地址
+      session_<ID>.json       会话 ID，供 --followup
+      followup_<ID>.txt       追问结果（第二次起带 _2/_3 序号）
+      video_<ID>.mp4          --download 才有
+```
+
+**交付给用户时读二级目录那个 `.md`**，它带作者/时长/字数/完整度/来源的头部。目录名带 ID 前缀是为了同名视频不互相覆盖。
 
 流程：
 
@@ -25,10 +40,10 @@ node <skill目录>/scripts/api_extract.mjs "<链接/短链/整段分享口令/ID
 
 输出：
 
-- `subtitles_<ID>.txt` —— 字幕正文（已去掉开场白、注入的上下文头、开头照抄的标题简介、免责声明）
-- `summary_<ID>.txt` —— 视频总结，**验收依据**
-- `meta_<ID>.json` —— 标题、作者、时长、原生字幕地址、无水印播放地址
-- `session_<ID>.json` —— 会话 ID，供追问用
+- `<OUT_ROOT>/<标题>_<ID>.md` —— 完整字幕，markdown，**这是交付物**
+- `<OUT_ROOT>/<标题>_<ID>/subtitles_<ID>.txt` —— 字幕正文（.md 的源，已去掉开场白、注入的上下文头、开头照抄的标题简介、免责声明）
+- `<OUT_ROOT>/<标题>_<ID>/summary_<ID>.txt` —— 视频总结，**验收依据**
+- `meta_<ID>.json` / `session_<ID>.json` / `followup_<ID>.txt` —— 同目录
 
 需要在同一会话里追问时（如输出截断）：
 
@@ -141,7 +156,8 @@ node <skill目录>/scripts/author_posts.mjs "<作者主页链接/作者分享短
 
 | 文件 | 作用 |
 |---|---|
-| `scripts/api_extract.mjs` | **主路径**。读 Cookie → 新会话「视频总结」→ 提取 → 清理；`--followup` 续接同一会话追问 |
+| `scripts/api_extract.mjs` | **主路径**。读 Cookie → 新会话「视频总结」→ 提取 → 清理 → 出 `.md` + 散件目录；`--followup` 续接同一会话追问 |
+| `scripts/outdir.mjs` | 输出布局：`<OUT_ROOT>/<标题>_<ID>.md` + `<标题>_<ID>/` 散件目录；文件名清洗、按 ID 找回目录、markdown 渲染 |
 | `scripts/extract_prompt.txt` | 提取提示词（API 版与面板版共用）。面板版靠结尾「注明「（此段无字幕）」。」定位本轮气泡，改时保留 |
 | `scripts/search.mjs` | 按关键词搜视频（综合搜索接口，免签名），支持排序、时间筛选、翻页 |
 | `scripts/author_posts.mjs` | 作者最新 N 条作品（`/aweme/v1/web/aweme/post/`，a_bogus + secsdk 两层签名），标置顶、图文 |

@@ -1,7 +1,7 @@
 // read_answer.mjs —— 从 AI 面板读最后一条 AI 回答（douyin-subtitle skill）
 // 用法: node read_answer.mjs <aweme_id> [问题结尾标记]
 //   问题结尾标记缺省 = 「（此段无字幕）」。」（强提示词结尾）
-// 输出: 当前目录 subtitles_<ID>.txt
+// 输出: <OUT_ROOT>/<标题>_<ID>/subtitles_<ID>.txt + <OUT_ROOT>/<标题>_<ID>.md（布局见 outdir.mjs）
 
 import fs from 'node:fs';
 import net from 'node:net';
@@ -11,6 +11,8 @@ const DAEMON_DIR = process.env.CDP_DAEMON_DIR || 'D:\\project\\tests\\browser';
 const STATE_FILE = path.join(DAEMON_DIR, 'cdp-daemon.json');
 import { resolveAwemeId } from './resolve_id.mjs';
 import { cleanAnswer } from './clean.mjs';
+import { paths, ensureDir, writeMarkdown } from './outdir.mjs';
+import { fetchMeta } from './video_meta.mjs';
 const [,, idArg, markerArg] = process.argv;
 const awemeId = await resolveAwemeId(idArg);
 if (!awemeId) { console.error('用法: node read_answer.mjs <视频URL/短链/aweme_id> [问题结尾标记]'); process.exit(1); }
@@ -95,8 +97,14 @@ async function main() {
   }
   answer = cleanAnswer(answer, console.log);
 
-  fs.writeFileSync(`subtitles_${awemeId}.txt`, answer, 'utf-8');
-  console.log(`已保存 subtitles_${awemeId}.txt（${answer.length} 字符）`);
+  // 元数据只用来取标题（决定目录名）和时长（完整度），拿不到也照样出正文
+  const meta = await fetchMeta(awemeId).catch(() => null);
+  const P = paths(awemeId, meta);
+  ensureDir(P.dir);
+  fs.writeFileSync(P.subs, answer, 'utf-8');
+  const md = writeMarkdown(awemeId, meta, { source: '抖音「问问AI」语音识别（面板版）' });
+  console.log(`已保存 ${P.subs}（${answer.length} 字符）`);
+  if (md) console.log(`markdown → ${md}`);
   console.log('---- 前 400 字符预览 ----');
   console.log(answer.slice(0, 400));
   try { await cdp('Target.detachFromTarget', { sessionId: sess }); } catch {}
