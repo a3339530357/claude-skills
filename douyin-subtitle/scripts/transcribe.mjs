@@ -2,9 +2,10 @@
 // SenseVoice-Small（sherpa-onnx CUDA fp32 + Silero VAD）本地转写
 // 模型和 venv 放在 sensevoice/（skill 目录下），不依赖项目 cwd。
 //
-// 用法: node transcribe.mjs <音频或视频路径> [--out x.txt] [--threads 4] [--cpu]
+// 用法: node transcribe.mjs <音频或视频路径> [--out x.txt] [--threads 4] [--cpu] [--yue]
 //   音频非 16k 单声道 wav 时自动用 ffmpeg 转换。
-//   默认 provider=cuda、model=fp32。--cpu 用 CPU（需 .venv，模型换 int8，见 SKILL.md）。
+//   默认 provider=cuda、model=fp32（SenseVoice 2024-07-17，带标点）。
+//   --yue 换粤语微调版（无标点）；--cpu 用 CPU（需 .venv，模型换 int8，见 SKILL.md）。
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -33,13 +34,14 @@ for (let i = 0; i < args.length; i++) {
 }
 const input = positional[0];
 if (!input) {
-  console.error('用法: node transcribe.mjs <音频/视频> [--out x.txt] [--threads 4] [--cpu]');
+  console.error('用法: node transcribe.mjs <音频/视频> [--out x.txt] [--threads 4] [--cpu] [--yue]');
   process.exit(2);
 }
 const out = opt('out', path.join(path.dirname(path.resolve(input)), `${path.parse(input).name}.txt`));
 const threads = opt('threads', '4');
 const provider = args.includes('--cpu') ? 'cpu' : 'cuda';
-const model = provider === 'cpu' ? 'int8' : 'fp32';
+// --yue：粤语视频用 2025-09-09 粤语微调版（无标点）；默认 2024-07-17 原版（有标点）
+const model = provider === 'cpu' ? 'int8' : args.includes('--yue') ? 'fp32-yue' : 'fp32';
 
 if (!fs.existsSync(input)) throw new Error(`找不到输入文件: ${input}`);
 const py = path.join(here, provider === 'cpu' ? '.venv' : '.venv-gpu', 'Scripts', 'python.exe');

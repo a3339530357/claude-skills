@@ -126,11 +126,11 @@ node <skill目录>/scripts/author_posts.mjs "<作者主页链接/作者分享短
    ```bash
    node <skill目录>/scripts/transcribe.mjs video_<ID>.mp4 --out subs_<ID>.txt
    ```
-   环境在 `<skill目录>/sensevoice/`（`.venv-gpu` + `models/`，共约 3.7 GB，2026-10-30 装好）：sherpa-onnx 2.0.1 CUDA12 + cuDNN9，模型 `sensevoice-zh-en-ja-ko-yue-2025-09-09` fp32 + Silero VAD 切段。`--cpu` 切到 CPU（需另建 `.venv` 并下 int8 模型，见下）。
+   环境在 `<skill目录>/sensevoice/`（`.venv-gpu` + `models/`，共约 3.7 GB，2026-10-30 装好）：sherpa-onnx 2.0.1 CUDA12 + cuDNN9，模型 `sensevoice-zh-en-ja-ko-yue-2024-07-17` fp32（开 ITN：带标点、数字转阿拉伯数字）+ Silero VAD 切段。`--yue` 换 `2025-09-09` 版——那是原版 + 2.18 万小时**粤语**微调，官方注明**不支持标点**，只给粤语视频用（2026-10-31 前误把它当默认，普通话转写因此没标点）。`--cpu` 切到 CPU（需另建 `.venv` 并下 int8 模型，见下）。
 
    实测（2026-10-29，Ryzen 5 7535HS + RTX 4060 Laptop，28 分 12 秒视频）：GPU fp32 **22 秒**（RTF 0.013，其中 VAD 13 秒、识别 9 秒）；CPU int8 68 秒。**fp32 和 int8 的识别结果相似度 99.4%，GPU 用 fp32 只是因为 int8 在 CUDA 上跑不动**。
 
-   SenseVoice 的短板，交付时要如实告诉用户：**没有标点**、英文专有名词常错（Agent→A阵/AET、ChatGPT→H G PT、WorkBuddy→work包）。需要成稿或中英混说多时，可另跑 Qwen3-ASR（2026-03，sherpa 包 `qwen3-asr-0.6B-int8`）：有标点、术语准得多，但 CPU 上 28 分钟要 8 分钟，且没有 GPU 可用（只有 int8 导出）。
+   2024-07-17 版实测（2026-10-31，10 分钟普通话）：标点 300+ 个、数字转阿拉伯数字，速度和 2025 粤语版一样（GPU 10.4 秒），「大肠→大厂」「二零二六→2026」修正。SenseVoice 的短板，交付时要如实告诉用户：英文专有名词和中英混说仍常错（headcount→黑CO、push→铺戏）（Agent→A阵/AET、ChatGPT→H G PT、WorkBuddy→work包）。需要成稿或中英混说多时，可另跑 Qwen3-ASR（2026-03，sherpa 包 `qwen3-asr-0.6B-int8`）：有标点、术语准得多，但 CPU 上 28 分钟要 8 分钟，且没有 GPU 可用（只有 int8 导出）。
 
 3. **长视频优先怀疑问问AI 截断**。实测一条 28 分钟视频，问问AI 只给了前 13 分钟原文，后 15 分钟完全没有，却在结尾编了一句总结腔的话，追问回「原文已完」。所以完整度低于 200 字/分钟时，不要只提示「可能缺段」，直接建议本地转写（同一视频 SenseVoice 出 10561 字 / 374 字每分钟，Qwen3 出 11214 字）。
 
