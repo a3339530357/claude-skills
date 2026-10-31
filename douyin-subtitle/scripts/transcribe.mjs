@@ -15,15 +15,27 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const here = path.join(root, 'sensevoice');
 
 const args = process.argv.slice(2);
-const input = args.find((a) => !a.startsWith('--'));
-if (!input) {
-  console.error('用法: node transcribe.mjs <音频/视频> [--out x.txt] [--threads 4] [--cpu]');
-  process.exit(2);
-}
 const opt = (name, def) => {
   const i = args.indexOf(`--${name}`);
   return i >= 0 && args[i + 1] && !args[i + 1].startsWith('--') ? args[i + 1] : def;
 };
+// 位置参数要先跳过 --xxx 及其取值，否则 `--out a.txt input.mp4` 会把 a.txt 当成输入。
+// 带取值的选项才吃掉下一个参数；--cpu 这类开关不吃。
+const TAKES_VALUE = new Set(['out', 'threads']);
+const positional = [];
+for (let i = 0; i < args.length; i++) {
+  const a = args[i];
+  if (a.startsWith('--')) {
+    if (TAKES_VALUE.has(a.slice(2)) && args[i + 1] && !args[i + 1].startsWith('--')) i++;
+    continue;
+  }
+  positional.push(a);
+}
+const input = positional[0];
+if (!input) {
+  console.error('用法: node transcribe.mjs <音频/视频> [--out x.txt] [--threads 4] [--cpu]');
+  process.exit(2);
+}
 const out = opt('out', path.join(path.dirname(path.resolve(input)), `${path.parse(input).name}.txt`));
 const threads = opt('threads', '4');
 const provider = args.includes('--cpu') ? 'cpu' : 'cuda';
@@ -53,8 +65,21 @@ if (!ok) {
 const t0 = Date.now();
 const r = spawnSync(py, ['-I', script, ok ? input : wav, out, '--provider', provider,
   '--model', model, '--threads', threads], { encoding: 'utf8', env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
-if (r.status !== 0) throw new Error(`转写失败: ${(r.stderr || r.stdout || '').trim().split('\n').slice(-3).join(' | ')}`);
-if (!ok && wav !== input) fs.rmSync(wav, { force: true });
+// status 为负 = 子进程被信号杀死（Windows 上是 0xC0000409 之类的高位状态码）。
+// 这时 stderr 常常是空的，只报「转写失败: 」会让人无从下手，所以把 signal/error 一起带出来。
+if (r.status !== 0) {
+  const tail = (r.stderr || r.stdout || '').trim().split('\n').slice(-3).join(' | ');
+  const why = r.status === null
+    ? `子进程未正常结束 signal=${r.signal}`
+    : r.status < 0
+      ? `子进程崩溃 status=0x${(r.status >>> 0).toString(16).toUpperCase()}`
+      : `status=${r.status}`;
+  throw new Error(`转写失败（${why}）${tail ? ': ' + tail : '（无输出）'}`);
+}
+// 兼容旧版 Node：25.x (Windows) 的 fs.rmSync 在中文长路径上会让整个进程 fastfail
+// (exit 0xC0000409)，文件也删不掉；26.13.0 LTS 已修复（同路径对照实测）。
+// 删单个文件用 unlinkSync 与 rmSync({force:true}) 等价，且各版本都安全。
+if (!ok && wav !== input) { try { fs.unlinkSync(wav); } catch { /* 已不在就算了 */ } }
 
 const stat = fs.statSync(out);
 console.log(r.stdout.trim());
