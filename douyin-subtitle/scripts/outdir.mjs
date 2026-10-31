@@ -9,6 +9,7 @@
 //                              subtitles_<ID>.txt
 //                              followup_<ID>[-N].txt
 //                              video_<ID>.mp4
+//                              audio_<ID>.mp3|m4a      ← --audio：原声 mp3 或视频分离出的音轨
 //
 // 根目录默认 D:\project\tests\douyin-subs，可用环境变量 DOUYIN_OUT_DIR 覆盖。
 // 目录名带 ID 前缀的唯一目的：同名视频不互相覆盖，且按 ID 排序即时间序。
@@ -43,6 +44,7 @@ export function paths(aid, meta) {
     session: f(`session_${aid}.json`),
     subs: f(`subtitles_${aid}.txt`),
     video: f(`video_${aid}.mp4`),
+    audio: (ext = 'mp3') => f(`audio_${aid}.${ext}`),
     followup: (n = 1) => f(n > 1 ? `followup_${aid}_${n}.txt` : `followup_${aid}.txt`),
   };
 }

@@ -119,12 +119,13 @@ node <skill目录>/scripts/author_posts.mjs "<作者主页链接/作者分享短
 2. **抖音侧拿不到**（验收不过、完整度明显偏低且追问无果、方言太重）或用户要求逐字精度 → 本地转写。**动手前先问用户**，说明要转多久、占多久显卡（实测见下）。
 
    拿到音频：
-   - 下载：`node <skill目录>/scripts/video_meta.mjs <ID> --download` → `video_<ID>.mp4`（Feed 里的无水印 `play_addr`，免 Cookie；不用 yt-dlp，它抓抖音常要 Cookie 且经常失效）
-   - 直接喂视频即可，`transcribe.mjs` 会自己用 ffmpeg 抽 16 kHz 单声道。
+   - **首选** `node <skill目录>/scripts/video_meta.mjs <ID> --audio`：作者用自己原声时（`music` 标题含「原声」、归属本作者、时长与视频差 ≤2 秒），`music.play_url` 就是整条视频的完整原声 mp3（2026-10-31 实测 10 分钟视频 14MB vs 视频 80MB，转写结果一致）→ `audio_<ID>.mp3`；否则（配乐、别人的原声）自动下视频、ffmpeg `-c:a copy` 无损拷出 `audio_<ID>.m4a`，临时视频删掉。**别把配乐当原声**：非原声视频的 `music` 只是拍同款的歌。
+   - 要留视频就加 `--download`（Feed 里的无水印 `play_addr`，免 Cookie；不用 yt-dlp，它抓抖音常要 Cookie 且经常失效）。
+   - 音频/视频都直接喂给 `transcribe.mjs`，它会自己用 ffmpeg 转 16 kHz 单声道。
 
    转写（**默认 SenseVoice-Small + GPU**）：
    ```bash
-   node <skill目录>/scripts/transcribe.mjs video_<ID>.mp4 --out subs_<ID>.txt
+   node <skill目录>/scripts/transcribe.mjs audio_<ID>.mp3 --out subs_<ID>.txt   # 或 audio_<ID>.m4a / video_<ID>.mp4
    ```
    环境在 `<skill目录>/sensevoice/`（`.venv-gpu` + `models/`，共约 3.7 GB，2026-10-30 装好）：sherpa-onnx 2.0.1 CUDA12 + cuDNN9，模型 `sensevoice-zh-en-ja-ko-yue-2024-07-17` fp32（开 ITN：带标点、数字转阿拉伯数字）+ Silero VAD 切段。`--yue` 换 `2025-09-09` 版——那是原版 + 2.18 万小时**粤语**微调，官方注明**不支持标点**，只给粤语视频用（2026-10-31 前误把它当默认，普通话转写因此没标点）。`--cpu` 切到 CPU（需另建 `.venv` 并下 int8 模型，见下）。
 
