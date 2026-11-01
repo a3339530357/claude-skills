@@ -86,7 +86,21 @@ node <skill目录>/scripts/comments.mjs "<视频链接/短链/分享口令/ID>" 
 - 抖音给的「评论总数」**包含回复**，所以一级评论数会比它少很多，这是正常的。
 - 交付时概括观点分布、高赞评论、作者回复了什么；评论里的昵称是别人的个人信息，只在回答里引用必要的部分，不整理成名单。
 - **楼中楼用的是占位签名**（见下），不是真签名；这个接口只校验格式不校验内容，所以能拿到数据。**别把这个做法推广到别的接口**——别的接口要么不验签名（list、搜索），要么验得很严（作者作品走 Argus 网关）。
-- **弹幕**：接口 `/aweme/v1/web/danmaku/get_v2/`（参数 `group_id`=`item_id`=视频 ID、`start_time`/`end_time`/`duration` 毫秒）能通，但抖音弹幕极少（实测 3 条视频 total 分别 2/0/1），且列表一律为空，没做成脚本。
+- **弹幕**：用 `scripts/danmaku.mjs`，见下节。早期「列表一律为空」的结论是**错的**，成因是漏了 `aid=6383`。
+
+## 弹幕
+
+用户说「看看弹幕」「这条视频的弹幕说了什么」时：
+
+```bash
+node <skill目录>/scripts/danmaku.mjs "<视频链接/短链/分享口令/ID>"
+```
+
+- 输出 `danmaku_<ID>.txt`（带 `mm:ss` 时间戳和点赞数，按出现时间排序）和 `.json`（原始字段）。
+- **免 Cookie、免签名**，但 **`aid=6383` 必须带**：缺了会回 `status_code 3「AppId不合法」`。
+- 接口 `www.douyin.com/aweme/v1/web/danmaku/get_v2/`，参数 `item_id`=`group_id`=视频 ID、`start_time`/`end_time`/`duration` 毫秒。**单次请求拿不全**，按 60 秒窗口分片，按 `danmaku_id` 去重。
+- 弹幕数量**因视频差别极大**，别预设「抖音弹幕少」：实测 7 分 56 秒的视频 310 条（开头 60 秒就 77 条，越往后越稀），也有整段为空的。
+- 弹幕是网友的即兴短句，和评论区一样只在回答里引用必要的部分，不整理成名单。
 
 ## 列出某个作者最新的作品
 
@@ -163,6 +177,7 @@ node <skill目录>/scripts/author_posts.mjs "<作者主页链接/作者分享短
 | `scripts/search.mjs` | 按关键词搜视频（综合搜索接口，免签名），支持排序、时间筛选、翻页 |
 | `scripts/author_posts.mjs` | 作者最新 N 条作品（`/aweme/v1/web/aweme/post/`，a_bogus + secsdk 两层签名），标置顶、图文 |
 | `scripts/comments.mjs` | 评论区：一级评论（真签名）+ 楼中楼展开（占位签名，`--replies K`） |
+| `scripts/danmaku.mjs` | 弹幕：60 秒分片拉取 + 去重，出带时间戳的 txt 和原始 json。免 Cookie，但 `aid=6383` 必带 |
 | `scripts/web_api.mjs` | 网页接口公共层：浏览器参数、a_bogus（调 sign_abogus.py）、Argus 第二层签名（`argus: true` 时）、空响应重试一次 |
 | `scripts/sign_abogus.py` | a_bogus 签名入口（web_api 以子进程调用）。默认 `abogus_dtk.py` + `sm3.py`：DTK 2026-09-09 对 bdms.js v1.0.1.19-fix.01 的逆向（Apache-2.0，无依赖）；`ABOGUS_IMPL=f2` 切到 `abogus.py`：f2 项目 2024-11 的 1.0.1.19 版（经 jiji262 拷贝，MIT，需 gmssl），留作对照 |
 | `scripts/cookie.mjs` | 抖音登录 Cookie：`DOUYIN_COOKIE` > `data/cookie.json` > CDP 从 Chrome 读（只在文件缺失/过期时）；剩 3 天提醒；`--status` / `--refresh` |
