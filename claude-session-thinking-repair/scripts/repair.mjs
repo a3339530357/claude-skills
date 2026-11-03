@@ -20,17 +20,27 @@ const backupDir = take('--backup-dir');
 const restore = take('--restore');
 const yes = args.includes('--yes');
 const known = new Set(['--apply', '--all-thinking', '--recover-broken-lines', '--backup-dir', '--restore', '--yes', '--json']);
+// 不备份模式下的临时工作区：任何退出路径都要清掉，避免在会话目录留下垃圾。
+let workDirToClean = null;
+function cleanupWorkDir() {
+  if (!workDirToClean) return;
+  try { fs.rmSync(workDirToClean, { recursive: true, force: true }); } catch {}
+  workDirToClean = null;
+}
 for (const a of args) if (a.startsWith('--') && !known.has(a)) fail(`未知参数: ${a}`);
-if (!file) fail('用法: repair.mjs <session.jsonl> [--apply --backup-dir <目录>] [--restore <备份文件> --yes] [--all-thinking] [--recover-broken-lines] [--json]');
+if (!file) fail('用法: repair.mjs <session.jsonl> [--apply [--backup-dir <目录>]] [--restore <备份文件> --yes] [--all-thinking] [--recover-broken-lines] [--json]');
 if (restore && (apply || backupDir || allThinking || recoverBroken)) fail('--restore 不能与 --apply/--backup-dir/--all-thinking/--recover-broken-lines 同时使用');
-if (apply && !backupDir) fail('--apply 必须同时指定 --backup-dir');
 if (apply && restore) fail('不能同时修复和回滚');
+if (apply && !backupDir) {
+  console.error('注意: 未指定 --backup-dir，本次修复不会留下原件备份，失败后无法回滚。');
+}
 
 // 官方签名是上千字符的 base64 密文；第三方网关常塞 24/36 字符的 UUID 片段冒充，按无签名处理。
 const MIN_SIGNATURE_LENGTH = 200;
 const SIGNATURE_PATTERN = /^[A-Za-z0-9+/=_-]+$/;
 
 function fail(message) {
+  cleanupWorkDir();
   console.error(`错误: ${message}`);
   process.exit(2);
 }
@@ -218,17 +228,27 @@ async function repair(fileName, backupDirectory) {
     return;
   }
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const targetBackup = path.join(path.resolve(backupDirectory), stamp);
-  fs.mkdirSync(targetBackup, { recursive: true });
+  const resolvedFile = path.resolve(fileName);
+  const targetBackup = backupDirectory ? path.join(path.resolve(backupDirectory), stamp) : null;
+  if (targetBackup) fs.mkdirSync(targetBackup, { recursive: true });
+  // 未给备份目录时，只在会话文件同目录下开一个临时工作区，用完即删（不落系统临时目录）。
+  const workDir = targetBackup || fs.mkdtempSync(path.join(path.dirname(resolvedFile), '.repair-tmp-'));
+  if (!targetBackup) workDirToClean = workDir;
   const original = fs.readFileSync(fileName);
-  const backupFile = path.join(targetBackup, 'original.jsonl');
-  fs.writeFileSync(backupFile, original, { flag: 'wx' });
-  const metadata = {
-    source: path.resolve(fileName), backup: backupFile,
-    sha256: hash(original), bytes: original.length,
-    createdAt: new Date().toISOString(), allThinking, recoverBroken,
-  };
-  fs.writeFileSync(path.join(targetBackup, 'manifest.json'), JSON.stringify(metadata, null, 2) + '\n', { flag: 'wx' });
+  const originalHash = hash(original);
+  let backupFile = null;
+  let manifestFile = null;
+  if (targetBackup) {
+    backupFile = path.join(targetBackup, 'original.jsonl');
+    fs.writeFileSync(backupFile, original, { flag: 'wx' });
+    manifestFile = path.join(targetBackup, 'manifest.json');
+    const metadata = {
+      source: resolvedFile, backup: backupFile,
+      sha256: originalHash, bytes: original.length,
+      createdAt: new Date().toISOString(), allThinking, recoverBroken,
+    };
+    fs.writeFileSync(manifestFile, JSON.stringify(metadata, null, 2) + '\n', { flag: 'wx' });
+  }
 
   const ctx = await prepass(fileName);
   const removed = new Set();
@@ -250,7 +270,7 @@ async function repair(fileName, backupDirectory) {
     }
     return p;
   };
-  const temp = path.join(targetBackup, 'repaired.jsonl');
+  const temp = path.join(workDir, 'repaired.jsonl');
   const out = fs.createWriteStream(temp, { flags: 'wx' });
   let kept = 0;
   await eachLine(fileName, (line) => {
@@ -275,18 +295,28 @@ async function repair(fileName, backupDirectory) {
   }
   if (after.repairNeeded) fail('修复后仍有需要删除的思考块，原文件未修改');
   const beforeSize = fs.statSync(fileName).size;
-  if (hash(fs.readFileSync(fileName)) !== metadata.sha256) {
-    fail('备份后原文件发生变化（会话仍在写入）；原文件未修改。先完全退出该 Claude Code 会话、修复完成前不要 resume，再从另一个 shell 重跑');
+  if (hash(fs.readFileSync(fileName)) !== originalHash) {
+    fail('读取后原文件发生变化（会话仍在写入）；原文件未修改。先完全退出该 Claude Code 会话、修复完成前不要 resume，再从另一个 shell 重跑');
   }
   fs.copyFileSync(temp, fileName);
   const finalHash = hash(fs.readFileSync(fileName));
-  if (finalHash !== hash(fs.readFileSync(temp))) fail('写入后的文件校验失败；请使用备份回滚');
-  fs.writeFileSync(path.join(targetBackup, 'result.json'), JSON.stringify({
-    before: { repairNeeded: before.repairNeeded, removeBlocks: before.removeBlocks, removeRecords: before.removeRecords, brokenLines: before.brokenLines.length },
-    after: { repairNeeded: after.repairNeeded, lines: after.lines, sha256: finalHash },
-    originalBytes: beforeSize,
-  }, null, 2) + '\n');
-  console.log(JSON.stringify({ applied: true, backup: backupFile, manifest: path.join(targetBackup, 'manifest.json'), removedBlocks: before.removeBlocks, removedRecords: before.removeRecords, reparentedRecords: before.reparentedRecords, recoveredBrokenLines: before.brokenLines.length, finalSha256: finalHash }, null, 2));
+  if (finalHash !== hash(fs.readFileSync(temp))) {
+    fail(targetBackup ? '写入后的文件校验失败；请使用备份回滚' : '写入后的文件校验失败；本次未留备份，无法回滚');
+  }
+  if (targetBackup) {
+    fs.writeFileSync(path.join(targetBackup, 'result.json'), JSON.stringify({
+      before: { repairNeeded: before.repairNeeded, removeBlocks: before.removeBlocks, removeRecords: before.removeRecords, brokenLines: before.brokenLines.length },
+      after: { repairNeeded: after.repairNeeded, lines: after.lines, sha256: finalHash },
+      originalBytes: beforeSize,
+    }, null, 2) + '\n');
+  } else {
+    cleanupWorkDir();
+  }
+  console.log(JSON.stringify({
+    applied: true, backup: backupFile, manifest: manifestFile,
+    removedBlocks: before.removeBlocks, removedRecords: before.removeRecords,
+    reparentedRecords: before.reparentedRecords, recoveredBrokenLines: before.brokenLines.length, finalSha256: finalHash,
+  }, null, 2));
 }
 function restoreFile(fileName, backupFile) {
   if (!yes) fail('回滚会覆盖当前会话文件；确认路径后添加 --yes');
