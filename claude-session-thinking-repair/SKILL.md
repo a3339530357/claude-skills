@@ -15,6 +15,14 @@ description: 诊断并修复 Claude Code 会话从 DeepSeek、GLM、Kimi 等第�
 - **不能热修，必须先退出再修**：会话进程每次工具调用都往存档追加；在会话里或刚退出就立刻 `claude -c` 时跑 `--apply`，会因「读取后原文件发生变化」中止（这是保护，不是故障）。即便侥幸写入，后续追加的记录也可能挂到已删除的 uuid 上。正确顺序：完全退出该会话 → 从另一个 shell 跑修复 → 看到 `applied: true` 后再 resume。
 - 官方 API 的 cryptographically signed thinking 只应原样保留；如果同一 `message.id` 下还有无签名块，整个回合也按不可验证处理。
 
+## 交互式入口（给用户自己跑）
+
+```bash
+node <skill目录>/scripts/pick.mjs [--root <projects目录>] [--all-thinking]
+```
+
+逐步选项目目录 → 选某几次会话或 `a` 整个目录 → 只读诊断 → 问坏行恢复、备份目录（默认 `<当前目录>/claude-session-repair-backups/<项目>/<会话>/`，`none` 不备份）→ 输入 `yes` 才调用 `repair.mjs --apply`。3 分钟内有写入的会话会提醒并默认排除；有无法恢复坏行或无法重接的会话自动跳过。所有规则仍由 `repair.mjs` 执行，`pick.mjs` 只负责选择和确认。
+
 ## 1. 定位并只读诊断
 
 ```bash
