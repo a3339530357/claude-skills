@@ -16,9 +16,11 @@ else
 fi
 
 echo "== 2/3 安全检查：确认没把凭据带进去 =="
-if git ls-files | grep -qE 'data/cookie\.json|certs/|\.key$|\.pem$'; then
+# data/keys.json 存 API key（web-search 等技能），和 cookie.json 一样不能进仓库
+SENSITIVE='data/cookie\.json|data/keys\.json|certs/|\.key$|\.pem$'
+if git ls-files | grep -qE "$SENSITIVE"; then
   echo "   ✗ 发现敏感文件已被跟踪，中止！"
-  git ls-files | grep -E 'data/cookie\.json|certs/|\.key$|\.pem$'
+  git ls-files | grep -E "$SENSITIVE"
   exit 1
 fi
 echo "   ✓ 无敏感文件"
@@ -28,7 +30,7 @@ for host in yan yan2; do
   echo "   → $host"
   rsync -az --delete \
     --exclude 'sensevoice/' --exclude 'node_modules/' --exclude '__pycache__/' \
-    --exclude 'synced/' --exclude 'data/cookie.json' --exclude 'certs/' \
+    --exclude 'synced/' --exclude 'data/cookie.json' --exclude 'data/keys.json' --exclude 'certs/' \
     --exclude 'logs/' --exclude '.git/' \
     ./ "$host:~/.claude/skills/"
   echo "     ✓ 完成"

@@ -25,6 +25,10 @@ logs/
 v1-messages*.json
 *.raw.json
 
+# 技能运行产物：douyin-subtitle 每次 search.mjs 都会写一份搜索结果到技能根目录
+douyin-subtitle/search_*.json
+douyin-subtitle/author_*.json
+
 # ===== 系统垃圾 =====
 .DS_Store
 Thumbs.db

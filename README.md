@@ -16,17 +16,20 @@
 | `douyin-subtitle` | 抖音字幕、搜索、作者作品、评论区 |
 | `html-report` | 生成自包含 HTML 报告 |
 | `session-handoff` | 会话交接文档 |
+| `web-search` | 联网搜索（DeepSeek + 智谱 GLM），首次使用引导填 key |
 
 ## 不提交的内容（见 `.gitignore`）
 
 - `*/data/cookie.json` —— 抖音 / B 站登录凭证
+- `*/data/keys.json` —— 搜索引擎 API key（web-search）
 - `certs/`、`*.key`、`*.pem` —— CA 私钥
 - `douyin-subtitle/sensevoice/` —— 3.7 GB 的 SenseVoice 模型与 venv
 - `synced/`、`node_modules/`、`logs/` —— 缓存与依赖
 
 **新机器上使用时**，需要自己补：
 1. `douyin-subtitle/data/cookie.json`、`bilibili-subtitle/data/cookie.json`（登录凭证）
-2. `douyin-subtitle/sensevoice/`（只有需要本地转写时才要，见该技能 SKILL.md）
+2. `web-search/data/keys.json`（搜索 API key，或首次使用时按技能提示填）
+3. `douyin-subtitle/sensevoice/`（只有需要本地转写时才要，见该技能 SKILL.md）
 
 ## 同步到服务器
 

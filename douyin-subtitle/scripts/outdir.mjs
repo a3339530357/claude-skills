@@ -1,15 +1,18 @@
 // outdir.mjs —— 输出布局（douyin-subtitle skill）
 //
-// 约定（2026-11-01 定）：
-//   输出根目录（二级）       <标题>_<ID>.md          ← 完整字幕，markdown，一眼能读
-//   同名三级子目录           <标题>_<ID>/            ← 其余全部散件
-//                              meta_<ID>.json
-//                              summary_<ID>.txt
-//                              session_<ID>.json
-//                              subtitles_<ID>.txt
-//                              followup_<ID>[-N].txt
-//                              video_<ID>.mp4
-//                              audio_<ID>.mp3|m4a      ← --audio：原声 mp3 或视频分离出的音轨
+// 约定（2026-11-06 改为按类型分目录）：
+//   <OUT_ROOT>/字幕/<标题>_<ID>.md      ← 完整字幕，markdown，正式交付物
+//   <OUT_ROOT>/散件/<标题>_<ID>/        ← 其余全部散件
+//                  meta_<ID>.json
+//                  summary_<ID>.txt
+//                  session_<ID>.json
+//                  subtitles_<ID>.txt
+//                  followup_<ID>[-N].txt
+//                  video_<ID>.mp4
+//                  audio_<ID>.mp3|m4a      ← --audio：原声 mp3 或视频分离出的音轨
+//
+// 兼容（2026-11-01 的旧扁平布局）：md 直接放根目录、散件目录与 md 同级。
+// 读取（findDir）两种都认；写入一律走新的两目录布局。
 //
 // 根目录默认 D:\project\tests\douyin-subs，可用环境变量 DOUYIN_OUT_DIR 覆盖。
 // 目录名带 ID 前缀的唯一目的：同名视频不互相覆盖，且按 ID 排序即时间序。
@@ -18,6 +21,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export const OUT_ROOT = process.env.DOUYIN_OUT_DIR || 'D:\\project\\tests\\douyin-subs';
+export const MD_DIR = path.join(OUT_ROOT, '字幕');
+export const PARTS_DIR = path.join(OUT_ROOT, '散件');
 
 const BAD = /[\\/:*?"<>|\u0000-\u001f]/g;
 
@@ -33,12 +38,12 @@ export function safeName(s, max = 60) {
 export function paths(aid, meta) {
   const title = safeName(meta?.title);
   const base = title ? `${title}_${aid}` : aid;
-  const dir = path.join(OUT_ROOT, base);
+  const dir = path.join(PARTS_DIR, base);
   const f = (name) => path.join(dir, name);
   return {
     base,
     dir,
-    md: path.join(OUT_ROOT, `${base}.md`),   // 二级：完整字幕
+    md: path.join(MD_DIR, `${base}.md`),     // 二级：完整字幕
     meta: f(`meta_${aid}.json`),             // 以下三级
     summary: f(`summary_${aid}.txt`),
     session: f(`session_${aid}.json`),
@@ -56,11 +61,14 @@ export function ensureDir(dir) {
 
 // 只凭 ID 找回已有目录（追问时还不知道标题，标题在 meta 里、meta 在目录里）
 // 目录名形如 `<标题>_<ID>`，也可能是不带标题的纯 `<ID>`
+// 新布局在 散件/ 下，旧扁平布局在根目录，两处都找；新的优先
 export function findDir(aid) {
-  if (!fs.existsSync(OUT_ROOT)) return null;
-  for (const e of fs.readdirSync(OUT_ROOT, { withFileTypes: true })) {
-    if (!e.isDirectory()) continue;
-    if (e.name === aid || e.name.endsWith(`_${aid}`)) return path.join(OUT_ROOT, e.name);
+  for (const root of [PARTS_DIR, OUT_ROOT]) {
+    if (!fs.existsSync(root)) continue;
+    for (const e of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!e.isDirectory()) continue;
+      if (e.name === aid || e.name.endsWith(`_${aid}`)) return path.join(root, e.name);
+    }
   }
   return null;
 }
@@ -85,7 +93,7 @@ export function writeMarkdown(aid, meta, extra = {}) {
   ].filter(Boolean);
 
   const md = `# ${meta?.title || aid}\n\n${rows.join('\n')}\n\n---\n\n${body}\n`;
-  fs.mkdirSync(OUT_ROOT, { recursive: true });
+  fs.mkdirSync(MD_DIR, { recursive: true });
   fs.writeFileSync(p.md, md, 'utf8');
   return p.md;
 }

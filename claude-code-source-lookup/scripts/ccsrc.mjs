@@ -13,17 +13,28 @@ function die(msg) {
   process.exit(2);
 }
 
-function findBinary() {
-  const link = path.join(os.homedir(), '.local', 'bin', 'claude');
+// Windows 上启动器叫 claude.exe，且 ~/.local/bin/claude.exe 是硬链接指向
+// ~/.local/share/claude/versions/<版本>；Linux/macOS 上才是 claude（符号链接）。
+const NAMES = process.platform === 'win32' ? ['claude.exe', 'claude'] : ['claude'];
+
+function tryResolve(p) {
   try {
-    return fs.realpathSync(link);
+    if (fs.statSync(p).isFile() || fs.lstatSync(p).isSymbolicLink()) return fs.realpathSync(p);
   } catch {}
+  return null;
+}
+
+function findBinary() {
+  for (const n of NAMES) {
+    const hit = tryResolve(path.join(os.homedir(), '.local', 'bin', n));
+    if (hit) return hit;
+  }
   for (const dir of (process.env.PATH || '').split(path.delimiter)) {
     if (!dir) continue;
-    const p = path.join(dir, 'claude');
-    try {
-      if (fs.statSync(p).isFile() || fs.lstatSync(p).isSymbolicLink()) return fs.realpathSync(p);
-    } catch {}
+    for (const n of NAMES) {
+      const hit = tryResolve(path.join(dir, n));
+      if (hit) return hit;
+    }
   }
   die('找不到 claude 可执行文件；用 --binary <路径> 指定');
 }
@@ -33,7 +44,10 @@ function opt(name, fallback) {
   return i >= 0 && args[i + 1] ? args[i + 1] : fallback;
 }
 
-const binary = path.resolve(opt('--binary', findBinary()));
+// fallback 必须惰性求值：写成 opt('--binary', findBinary()) 会无条件调用 findBinary()，
+// 导致传了 --binary 仍然先跑一次探测（Windows 上探测失败就直接 exit 2）。
+const binaryArg = opt('--binary', null);
+const binary = path.resolve(binaryArg || findBinary());
 const version = path.basename(binary);
 const cacheDir = path.join(os.homedir(), '.cache', 'ccsrc');
 const cacheFile = path.join(cacheDir, `${version}.txt`);
