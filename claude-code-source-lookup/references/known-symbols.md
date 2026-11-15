@@ -2,6 +2,19 @@
 
 记录已定位过的函数、字段、事件名及其含义，避免重复检索。每条都注明是在哪个版本上确认的——Claude Code 迭代快，跨版本可能改名。
 
+## Bash 工具执行链路（2.1.319，本机版本实测）
+
+| 符号 | 类型 | 含义 |
+|---|---|---|
+| `Xt`（IIFE 内 `class r`） | 类 | **bash 会话类**。构造 `ve.spawn("/bin/bash",["--noprofile","--norc"],{stdio:["pipe","pipe","pipe"],detached:!0})`，常驻进程。**stdout 和 stderr 的 `data` 事件喂同一个累积器 `Me`**——stderr 天然回到工具结果，不需要用户写 `2>&1`。 |
+| `Me(t)` | 方法 | 输出累积器：追加到 WeakSet 字段 buffer，超 `Ze` 字节截断（置 truncated 标志）。 |
+| `exec(e,t)` | 方法 | 执行命令。**把用户命令包成 `{ ${e} } </dev/null 2>&1; printf '\n${哨兵}%d\n' $?`** 再写入常驻 bash 的 stdin——即每条命令都被强制补了 `2>&1`。哨兵 `__ANT_CMD_<uuid>_DONE__` 划界并带出退出码；`slice(l+o.length).match(/^(-?\d+)/)` 解析。 |
+| `Jt(r)` | 函数 | bash 工具的注册工厂，`e=new Xt(r.workdir,r.env)` 持有会话；`exitCode!==0` 时把累积的 output 作为错误抛出。 |
+| `Vt()` | 函数 | 构造 env：剔除所有 `ANTHROPIC_*` 变量。 |
+| `nt` | 常量 | 默认超时（timeoutMs 兜底值）。 |
+
+**结论（可直接引用）**：Bash 工具的 stderr 捕获是双层保险（spawn stderr 监听 + 命令模板自带 `2>&1`），裸跑命令错误也可见；`2>&1` 只在管道/文件定向场景有真实收益。
+
 ## 错误分类与自愈（2.1.317）
 
 | 符号 | 类型 | 含义 |
@@ -109,3 +122,48 @@
 - `capability_rejected` —— 网关错误契约
 - `retry:` —— 自动重试路径的标识（`retry:thinking-signature-strip`、`retry:media-strip` 等）
 - `Cannot destructure property` —— 压缩代码里解构失败的报错，反过来能定位对象结构
+
+## Tool search / 技能描述预算 / lean prompt（2.1.322 实测）
+
+| 符号 | 类型 | 含义 |
+|---|---|---|
+| `upe()` | 函数 | tool search 模式判定：`ENABLE_TOOL_SEARCH=true` → `"tst"`（强制开，不做阈值判断）；`"auto"` → `"tst-auto"`（按阈值）。 |
+| `tao(...)` | 函数 | 主开关，埋点 `tengu_tool_search_mode_decision`。先过 `Qit` 硬性检查（`model_unsupported`/`vertex_model_unsupported`/`foundry_deployment_unsupported`/`no_tools_in_request`/`not_registered`/`mcp_search_unavailable`）。 |
+| `uSe(e)` / `UIs(e)` | 函数 | 模型支持判定。不支持名单 `w()` 默认 `T=["claude-3-opus","claude-3-sonnet","claude-3-haiku","claude-3-5-sonnet","claude-3-5-haiku","claude-3-7-sonnet"]`（可被 statsig `tengu_tool_search_unsupported_models` 覆盖）。**deepseek/glm 等未知模型不在名单里 → 判定支持**。 |
+| `Mae` | 错误类 | "tool search refused"。 |
+| `cLn(...)` | 函数 | 拒绝后重发路径：注入 critical_system_reminder `"ToolSearch is no longer available. Tools listed earlier as deferred that are still available are declared in full: call them directly."` **此字符串在二进制里只出现在这一处**——请求里见到它 = 那是拒绝后的重发。 |
+| `xpe` / `Bje` | 函数 | 触发条件：请求声明了 deferred tools + HTTP 400/422 + 非 billing + 无其他恢复认领 → 抛 `Mae`，日志 `"[ToolSearch] HTTP ...; sending the request again without deferred tools. ENABLE_TOOL_SEARCH=false avoids the refused request"`。`lIe()` 为假（自定义 base URL 场景）时**任何** 400/422 都触发。 |
+| `TMt(e,n)` | 函数 | **技能描述字符预算 = contextWindow × 4 × skillListingBudgetFraction(默认 0.01)**，即窗口的 4%。env `SLASH_COMMAND_TOOL_CHAR_BUDGET` 可整体覆盖；未知模型窗口走默认 `EFr=200000` → 预算 8000 字符。 |
+| `LTn(...)` | 函数 | 技能列表渲染：超预算时 `source==="bundled"` 的内置技能无条件保留完整描述，其余按优先级贪心塞，塞不下就 `- name` 裸名。告警文案 `"Skill listing over budget: ... Run /skills to disable some, or raise skillListingBudgetFraction in settings."` |
+| `fe(e)` / `Et(e)` / `hJ` / `JD` | 函数 | leanPrompt 判定。`Et` 是已知模型名单（claude-3-\*/haiku/sonnet/opus-4-0..4-7 + 服务器按模型的 `lean_prompt` 配置）；不在名单的模型 → **硬编码 lean=true（精简 system prompt）**。env `CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT` 设真值强制 lean、设假值强制 full。 |
+| `o0r` / `Yit` | 常量 | `Yit=10`：tst-auto 模式的默认阈值百分比（窗口的 10%）。`o0r=2.5`：字符兜底换算。 |
+
+**实测印证（2026-11-12 抓包）**：opus-5-5 首轮请求体尾部带 "ToolSearch is no longer available..." → 该请求是被拒后的重发（66 工具全量内联）；deepseek 首轮无此句（21 工具 + ToolSearch 正常发出）。技能描述：opus[1M] 窗口预算 40K 字符 → 49 个全带描述；deepseek 默认 200K 窗口 → 8K 字符预算 → 只剩 10 个 bundled 带描述、39 个裸名。
+
+| `GSs` / `ayi` / `hos` | 函数 | attribution（billing 段）拼装链：`hos` 组 system → `ayi` 调 `GSs` 生成 `x-anthropic-billing-header: cc_version=...; cc_entrypoint=...` 文本并插入 system[0]。开关：`function I(){return Qo(process.env.CLAUDE_CODE_ATTRIBUTION_HEADER)}`，env 设 `"0"` 即不注入（非 firstParty 场景 N() 恒 false，force 也救不回）。`CLAUDE_CODE_ATTRIBUTION_PROJECT` 可指定 Project id。 |
+| `GSs` / `ayi` / `hos` | 函数 | attribution（billing 段）拼装链：`hos` 组 system → `ayi` 调 `GSs` 生成 `x-anthropic-billing-header: cc_version=...; cc_entrypoint=...` 文本并插入 system[0]。开关：`function I(){return Qo(process.env.CLAUDE_CODE_ATTRIBUTION_HEADER)}`，env 设 `"0"` 即不注入（非 firstParty 场景 N() 恒 false，force 也救不回）。`CLAUDE_CODE_ATTRIBUTION_PROJECT` 可指定 Project id。 |
+
+## 请求体结构与 prompt cache 断点（2.1.325 / claude.exe 实测）
+
+**先记住顶层结构：`tools`、`system`、`messages` 是三个平级字段，不是嵌套。** 缓存前缀顺序就是 `tools → system → messages`，所以改 tools 影响最大，改 messages 尾部影响最小。工具说明读起来像系统提示词，实际是独立的 `tools` 字段，别混。
+
+| 符号 | 类型 | 含义 |
+|---|---|---|
+| `$Us(e, n)` | 函数 | **把 system prompt 数组切成带 `cacheScope` 的块**。返回值形如 `[{text, cacheScope: null\|"org"\|"global"}]`。按 `J$`（动态边界）把块分成静态段和动态段；`cacheScope:null` 的块不打断点。埋点 `tengu_sysprompt_boundary_found`（字段 `blockCount`/`staticBlockLength`/`dynamicBlockLength`）和 `tengu_sysprompt_missing_boundary_marker`；走 tool 侧缓存时是 `tengu_sysprompt_using_tool_based_cache`。 |
+| `Mos(systemPrompt, enableCache, opts)` | 函数 | **system 块 → 实际请求体的最后一步**。`.map` 里对每块做 `{type:"text", text:wTn(s.text), ...enableCache && s.cacheScope!==null && {cache_control: Wne({scope, ttl})}}`。`scopeRefused` 为真时把 scope 置空。**断点是逐块打的，不是全篇一个。** |
+| `Wne({scope, ttl})` | 函数 | 生成 `cache_control`：`{type:"ephemeral", ...ttl && {ttl}, ...scope==="global" && {scope}}`。`ttl` 可为 `"5m"`/`"1h"`（见 `KLe`）。 |
+| `KLe(source, {agentCacheTtlOverride, ignoreOverage, mainThreadModel})` | 函数 | 决定 TTL：默认 `5m`；订阅者且命中 `tengu_prompt_cache_1h_config.allowlist` → `1h`（reason=`subscriber`）；overage 状态或非 firstParty → 强制 `5m`。 |
+| `J$` | 常量 | `"__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__"`。**静态段/动态段的分界线标记**。 |
+| `O`（在 `$Us` 所在 chunk） | 常量 | `"__SYSTEM_PROMPT_STATIC_BREAKPOINT__"`。静态段**内部**的额外断点，靠 `HUs()` / `uFr()` 按行匹配把它拆出来单独成块。 |
+| `HUs(prompt)` | 函数 | 只有包含 `O` 标记时才拆，否则原样返回。`uFr(e,n)` 按行找标记（要求该行 trim 后完全等于标记），拆成 `[前段, 标记, 后段]`。 |
+| `KZ()` | 函数 | 是否启用 global cache：要求 `xb() && Fi()` 且 provider 是 `firstParty` 或 `anthropicAws`。 |
+| `T` / `v` / `U` | 常量 | 三种身份首句：`"You are Claude Code, Anthropic's official CLI for Claude."`、加 `", running within the Claude Agent SDK."`、`"You are a Claude agent, built on Anthropic's Claude Agent SDK."`。集合 `I` 用于识别这类身份块。 |
+| `pFr(e)` | 函数 | 选身份首句：vertex → `T`；非交互且有 appendSystemPrompt → `v`；非交互 → `U`；否则 `T`。 |
+| `UUs(...)` / `Maa(e)` | 函数 | system prompt 前的指纹短码（sha256 取前 3 位），拼自 `j="59cf53e54c78"` + 版本信息。 |
+| `skill_listing`（在消息工厂对象里） | 工厂 | **技能列表是 `messages` 里的一条 meta 消息，不是 system 块**。返回 `Ie({content: "The following skills are ...available for use with the Skill tool:\n\n" + content, isMeta: !0})`。`addsToEarlier:true` 时前半句变成 `also ` 并追加 `". This list adds to the skills listed earlier in this conversation and is not the full list"`。同工厂还有 `critical_system_reminder`、`bash_output_audience_note`、`plan_mode_exit`、`skill_mention`、`dynamic_skill` 等，全是消息。 |
+| `dynamic_skill` | 工厂 | 热发现新技能时用，文案 `"New skills discovered in <dir>, now available via the Skill tool:"`，同样 `isMeta:!0`。 |
+| `Kns` / `Vns` | 函数 | 给单条 user / assistant 消息的**最后一个** content block 打 `cache_control: Wne({ttl})`——用于 side request / 单次请求路径。主对话路径的断点分配没有在这两个函数里。 |
+
+**推论（2026-11-15 验证）**：安装/删除技能只改变 `messages` 尾部的一条 meta 消息，`tools` 和 `system` 完全不动，所以 prompt cache 命中率能保持 95% 以上。反过来说，**任何改动 `tools` 的操作（增删工具、MCP 重连、enable/disable 插件）都会让整个前缀失效**。
+
+**未确认**：`wTn()` 的具体变换没追；主对话路径里 messages 层断点究竟打在哪几条上，没找到明确证据。
