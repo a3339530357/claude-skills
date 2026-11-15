@@ -41,3 +41,12 @@ browser-cdp
 # ===== 第三方 story 技能（已卸载，断链）=====
 story
 story-*
+
+# ===== 第三方 lark-cli 飞书技能（符号链接指向 ~/.agents/skills，只留本地）=====
+lark-*
+
+# ===== 第三方 find-skills（同样是指向 ~/.agents/skills 的 Junction，只留本地）=====
+find-skills
+
+# ===== lmfpd 检测报告：运行产物，文件名和内容里带被测端点地址 =====
+lmfpd-results/
