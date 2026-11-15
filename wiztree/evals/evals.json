@@ -1,0 +1,23 @@
+{
+  "skill_name": "wiztree",
+  "evals": [
+    {
+      "id": 0,
+      "prompt": "我的 C 盘又满了，现在只剩 60 多 G，能不能看看是什么占的？我不太想动我自己存的东西。",
+      "expected_output": "扫描分析 C 盘，给出分层占用报告，区分可清理与不可动，不自动删除",
+      "files": []
+    },
+    {
+      "id": 1,
+      "prompt": "D:\\project\\tests 这个目录怎么占了这么多，帮我看看里面哪个文件夹最大，有哪些超过 500MB 的文件",
+      "expected_output": "只扫指定目录，列出大目录和大文件，不扫描全盘",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "我之前删 AppData\\Local\\NVIDIA\\DXCache 结果只删掉一半，剩下一半删不掉，报文件被占用，这怎么处理",
+      "expected_output": "识别出文件被驱动锁定，建议关闭进程或重启后删除，不盲目重试",
+      "files": []
+    }
+  ]
+}
