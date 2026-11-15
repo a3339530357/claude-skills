@@ -2,9 +2,14 @@
 // 交互式选择要修复的会话：先选项目目录，再选其中一次会话或整个目录。
 // 只负责挑选和确认，诊断/修复/备份全部交给同目录的 repair.mjs，规则不在这里重复实现。
 //
-// 用法: node pick.mjs [--root <projects目录>] [--all-thinking]
+// 用法: node pick.mjs [--root <projects目录>] [--all-thinking] [--backup-dir <目录> | --no-backup] [--yes]
 //   --root          指定 projects 目录；不给则自动找 $CLAUDE_CONFIG_DIR/projects 与 ~/.claude/projects
 //   --all-thinking  透传给 repair.mjs：连看似真签名的思考块也删（一般不需要）
+//   --backup-dir    备份根目录；不给则默认 <当前目录>/claude-session-repair-backups
+//   --no-backup     不留备份（修复后无法回滚）
+//   --yes           选完会话后不再确认，直接修复
+// 选完会话后只有一次确认：回车开始，n 改为不备份，q 取消。其余都按默认处理并打印出来：
+// 拼接坏行自动恢复；选「整个目录」时自动排除刚有写入的会话，按编号点名选的则照修。
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,9 +20,14 @@ import readline from 'node:readline';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repairScript = path.join(here, 'repair.mjs');
 const args = process.argv.slice(2);
-const known = new Set(['--root', '--all-thinking']);
+const known = new Set(['--root', '--all-thinking', '--backup-dir', '--no-backup', '--yes']);
 for (const a of args) if (a.startsWith('--') && !known.has(a)) die(`未知参数: ${a}`);
-const rootArg = (() => { const i = args.indexOf('--root'); return i < 0 ? undefined : args[i + 1] || die('--root 缺少参数'); })();
+const argValue = (name) => { const i = args.indexOf(name); return i < 0 ? undefined : args[i + 1] || die(`${name} 缺少参数`); };
+const rootArg = argValue('--root');
+const backupArg = argValue('--backup-dir');
+const noBackup = args.includes('--no-backup');
+const assumeYes = args.includes('--yes');
+if (backupArg && noBackup) die('--backup-dir 和 --no-backup 不能同时给');
 const allThinking = args.includes('--all-thinking');
 // 最近这么久内有写入的会话视为可能仍在使用；repair.mjs 的哈希检查是最后一道保护，这里只是提前提醒。
 const BUSY_MS = 3 * 60 * 1000;
@@ -222,12 +232,6 @@ function quit() {
   process.exit(0);
 }
 
-async function yesNo(q, def = false) {
-  const a = (await ask(`${q} ${def ? '[Y/n]' : '[y/N]'}: `)).toLowerCase();
-  if (!a) return def;
-  return a === 'y' || a === 'yes';
-}
-
 // ---------- 主流程 ----------
 const root = await chooseRoot(findRoots());
 let picked;
@@ -259,40 +263,34 @@ if (!todo.length) {
   process.exit(0);
 }
 
-const busy = todo.filter(({ s }) => s.busy);
-if (busy.length) {
-  console.log(`\n以下 ${busy.length} 个会话 ${BUSY_MS / 60000} 分钟内有写入，可能仍在使用（包括正在运行本脚本的那个会话）:`);
-  for (const { s } of busy) console.log(`  ${s.id.slice(0, 8)}  ${clip(s.title, 50)}`);
-  console.log('仍在使用的会话修了也会因「原文件发生变化」中止，或修完又被追加写入。');
-  if (!(await yesNo('仍要包含它们吗？'))) todo = todo.filter(({ s }) => !s.busy);
-  if (!todo.length) { console.log('没有剩余会话，未修改任何文件。'); rl.close(); process.exit(0); }
+// 刚有写入的会话：选整个目录时自动排除（多半是别的窗口正开着的）；按编号点名选的照修。
+// 真在使用的话 repair.mjs 会因「原文件发生变化」中止，不会写坏。
+if (picked.whole) {
+  const busy = todo.filter(({ s }) => s.busy);
+  for (const { s } of busy) console.log(`  跳过 ${s.id.slice(0, 8)}：${BUSY_MS / 60000} 分钟内有写入，可能仍在使用；要修就按编号单独选它`);
+  todo = todo.filter(({ s }) => !s.busy);
+  if (!todo.length) { console.log('\n没有剩余会话，未修改任何文件。'); rl.close(); process.exit(0); }
 }
 
-let recoverBroken = false;
-const withBroken = todo.filter(({ d }) => d.brokenLines?.length);
-if (withBroken.length) {
-  console.log(`\n${withBroken.length} 个会话有写盘中断造成的拼接坏行：修复会取每行能解析的后半段完整记录，丢掉前面半截旧记录。`);
-  recoverBroken = await yesNo('一并恢复这些坏行吗？（选否则跳过这些会话）');
-  if (!recoverBroken) todo = todo.filter(({ d }) => !d.brokenLines?.length);
-  if (!todo.length) { console.log('没有剩余会话，未修改任何文件。'); rl.close(); process.exit(0); }
-}
+// 拼接坏行一律恢复：取每行能解析的后半段完整记录，丢掉前面半截旧记录。
+const recoverBroken = todo.some(({ d }) => d.brokenLines?.length);
 
 // 备份默认放在当前目录下的顶层文件夹里，不用系统临时目录。
-const defaultBackup = path.join(process.cwd(), 'claude-session-repair-backups');
-console.log('\n备份目录：修复前把原文件完整复制过去，可用 --restore 回滚。');
-const b = await ask(`回车使用默认 ${defaultBackup}；输入其他路径；输入 none 不备份: `);
-let backupRoot = null;
-if (b.toLowerCase() === 'none') {
-  console.log('警告：不留备份，修复后无法回滚。');
-  if (!(await yesNo('确定不备份？'))) backupRoot = defaultBackup;
-} else backupRoot = path.resolve(b || defaultBackup);
+let backupRoot = noBackup ? null : path.resolve(backupArg || path.join(process.cwd(), 'claude-session-repair-backups'));
 
-console.log(`\n即将修复 ${todo.length} 个会话${picked.whole ? `（整个目录 ${project.name}）` : ''}:`);
-for (const { s, d } of todo) console.log(`  ${s.id.slice(0, 8)}  删 ${d.removeBlocks} 个思考块${d.brokenLines?.length ? `，恢复坏行 ${d.brokenLines.length}` : ''}  ${clip(s.title, 40)}`);
-console.log('修复会丢弃这些会话里不可验证的历史思考块（正文、工具调用和结果、附件、压缩摘要保留）。');
-console.log(`备份: ${backupRoot || '不备份'}${allThinking ? '；模式: --all-thinking（删除全部思考块）' : ''}`);
-console.log('请确认这些会话都已完全退出。');
-if ((await ask('输入 yes 开始修复: ')).toLowerCase() !== 'yes') quit();
+console.log(`\n即将修复 ${todo.length} 个会话${picked.whole ? `（整个目录 ${project.name}）` : ''}，丢弃不可验证的历史思考块，其余内容保留:`);
+for (const { s, d } of todo) console.log(`  ${s.id.slice(0, 8)}  删 ${d.removeBlocks} 个思考块${d.brokenLines?.length ? `，恢复坏行 ${d.brokenLines.length}` : ''}${s.busy ? '  [刚有写入，没退出会中止]' : ''}  ${clip(s.title, 40)}`);
+if (allThinking) console.log('模式: --all-thinking（删除全部思考块）');
+console.log(`备份: ${backupRoot || '不备份，修复后无法回滚'}`);
+if (!assumeYes) {
+  for (;;) {
+    const a = (await ask(`回车 = 开始修复${backupRoot ? '；n = 不备份直接修' : ''}；q = 取消: `)).toLowerCase();
+    if (a === 'q') quit();
+    if (a === '' || a === 'y' || a === 'yes') break;
+    if (a === 'n' && backupRoot) { backupRoot = null; console.log('不备份，修复后无法回滚。'); break; }
+    console.log('输入无效。');
+  }
+}
 rl.close();
 
 const report = [];

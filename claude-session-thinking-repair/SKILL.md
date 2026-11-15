@@ -18,10 +18,17 @@ description: 诊断并修复 Claude Code 会话从 DeepSeek、GLM、Kimi 等第�
 ## 交互式入口（给用户自己跑）
 
 ```bash
-node <skill目录>/scripts/pick.mjs [--root <projects目录>] [--all-thinking]
+node <skill目录>/scripts/pick.mjs [--root <projects目录>] [--all-thinking] [--backup-dir <目录> | --no-backup] [--yes]
 ```
 
-逐步选项目目录 → 选某几次会话或 `a` 整个目录 → 只读诊断 → 问坏行恢复、备份目录（默认 `<当前目录>/claude-session-repair-backups/<项目>/<会话>/`，`none` 不备份）→ 输入 `yes` 才调用 `repair.mjs --apply`。3 分钟内有写入的会话会提醒并默认排除；有无法恢复坏行或无法重接的会话自动跳过。所有规则仍由 `repair.mjs` 执行，`pick.mjs` 只负责选择和确认。
+选项目目录 → 选某几次会话或 `a` 整个目录 → 只读诊断 → **只确认一次**：回车开始修复，`n` 改为不备份直接修，`q` 取消。加 `--yes` 连这一次也不问。其余都按默认处理并打印出来：
+
+- 备份默认放 `<当前目录>/claude-session-repair-backups/<项目>/<会话>/`，`--backup-dir` 改位置，`--no-backup` 不备份。
+- 拼接坏行自动恢复。
+- 3 分钟内有写入的会话：选「整个目录」时自动排除；按编号点名选的照修（没退出的话 `repair.mjs` 会因原文件变化而中止，不会写坏）。
+- 有无法恢复坏行或无法重接的会话自动跳过。
+
+所有规则仍由 `repair.mjs` 执行，`pick.mjs` 只负责选择和确认。
 
 ## 1. 定位并只读诊断
 
